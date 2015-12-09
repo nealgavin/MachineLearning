@@ -73,6 +73,19 @@ def sim_pearson(prefs, persion1, persion2):
     r = num / den
     return r
 
+def sim_tanimoto(prefs, persion1, persion2):
+    """Tanimoto相似度评价"""
+    #求persion1与persion2喜欢的交集
+    si = {}
+    for item in prefs[persion1]:
+        if item in prefs[persion2]:
+            si[item] = 1
+    len_intersect = len(si)
+    len_p1 = len(prefs[persion1])
+    len_p2 = len(prefs[persion2])
+    similar_rate = float(len_intersect) / float(len_p1 + len_p2 - len_intersect)        
+    return similar_rate
+
 def topMatches(prefs, persion, n = 5, similarity = sim_pearson):
     """得到Top n 推荐相似度评分"""
     scores = [(similarity(prefs, persion, other), other) for other in prefs if other != persion ]
@@ -130,6 +143,7 @@ if __name__ == '__main__':
     print topMatches(critics, 'Toby', n = 3)
     print getRecommendationsRank(critics, 'Toby', n = 3)
     print getRecommendationsRank(critics, 'Toby', n = 3, similarity = sim_distance)
+    print getRecommendationsRank(critics, 'Toby', n = 3, similarity = sim_tanimoto), 'tanimoto'
     movies = transformPrefs(critics)
     print topMatches(movies, 'Superman Returns', n = 3)
     print getRecommendationsRank(critics, "Jack Matthews", n = 2)
