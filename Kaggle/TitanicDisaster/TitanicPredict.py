@@ -9,6 +9,7 @@
 #################################################################
 import pandas as pd
 import numpy as np
+import logging as log
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.cross_validation import train_test_split
 from sklearn import preprocessing
@@ -20,7 +21,7 @@ import matplotlib.pyplot as plt
 import time
 import csv
 import re
-
+log.basicConfig(level=log.DEBUG, format='%(asctime)s %(filename)s[line:%(lineno)d] %(levelname)s %(message)s', datefmt='%a, %d %b %Y %H:%M:%S')
 class TitanicPredict(object):
     """TitanicPredict"""
     def readTrain(self):
@@ -35,9 +36,9 @@ class TitanicPredict(object):
         self.test = test
         return test
 
-    def dataAnalyse(self):
+    def dataAnalyse(self, train, test):
         """数据分析"""
-        df = self.df
+        df = pd.concat([train, test])
         df.info()
         print df.describe()
         #猜测女性生存率高
@@ -45,18 +46,33 @@ class TitanicPredict(object):
         people = [df[(df.Sex == 'male')]['Sex'].size, df[(df.Sex == 'female')]['Sex'].size]
         peopleSurvive = [df[(df.Sex == 'male') & (df.Survived == 1)]['Sex'].size, df[(df.Sex == 'female') & (df.Survived == 1)]['Sex'].size]
         print 'male:', people[0], 'female', people[1], 'survive_male', peopleSurvive[0], 'survive_female', peopleSurvive[1]
+        #年龄大中小分布#
+        ages_bin = pd.cut(df['Age'], [0, 18, 40, 100])
+        #根据样本分位数比较均匀划分
+        #ages_bin = pd.qcut(df['Age'], 3)
+        ages_dummy = pd.get_dummies(ages_bin)
+        ages_dummy.columns.values[0] = 'child'
+        ages_dummy.columns.values[1] = 'man'
+        ages_dummy.columns.values[2] = 'old'
+        survived_ages = pd.concat([ages_dummy, df['Survived']], axis = 1)
+        print survived_ages[(survived_ages.child == 1)]['child'].size, survived_ages[(survived_ages.man == 1)]['man'].size, survived_ages[(survived_ages.old == 1)]['old'].size
+        print survived_ages[(survived_ages.child == 1) & (survived_ages['Survived'] == 1)]['child'].size, survived_ages[(survived_ages.man == 1) & (survived_ages['Survived'] == 1)]['man'].size, survived_ages[(survived_ages.old == 1) & (survived_ages['Survived'] == 1)]['old'].size
+        print 'suvived_child' 
+        print survived_ages.columns.values
+        print ages_dummy.columns.values
+
     
     def processCabin(self, df, keep_binary = True, keep_scaled = True):
         """船仓定性转化"""
         df['Cabin'][df.Cabin.isnull()] = 'U0'
         df['CabinLetter'] = df['Cabin'].map( lambda x: self.getLetter(x) )
         #factorize:以原始字符为索引映射成数值数据，[0]为数值，[1]为原始索引
-        df['CabinLetter'] = pd.factorize(df['CabinLetter'])[0]
+        df['CabinLetter'] = pd.factorize(df['CabinLetter'])[0] + 1
         if keep_binary:
             #分拆不同的属性，变成01值的属性，如ABC，分拆后，A(1,0,0) B(0,1,0) C(0,0,1)
             bletters = pd.get_dummies(df['CabinLetter']).rename(columns=lambda x: 'CabinLetter_' + str(x))
             #把分拆的属性特征合并到原始特征数据集中
-            df = pd.concat([df, bletters], axis=2)
+            df = pd.concat([df, bletters], axis=1)
             #print bletters
         df['CabinNumber'] = df['Cabin'].map( lambda x: self.getNumber(x) )
         if keep_scaled:
@@ -83,23 +99,24 @@ class TitanicPredict(object):
     def processName(self, df, keep_binary = True, keep_scaled = True, keep_bins = True):
         """处理人名，提取出名望,身份"""
         #名字的长短可能和身份地位相关,增加特征
-        df['Names'] = df['Name'].map(lambda x:len(re.split(' ', x)))
+        names = df['Name'].map(lambda x:len(re.split(' ', x)))
         #每个人的头衔
         #df['Title']
         df['Title'] = df['Name'].map(lambda x: re.compile(", (.*?)\.").findall(x)[0])
         #把低频的头衔合并
         df['Title'][df.Title == 'Jonkheer'] = 'Master'
         df['Title'][df.Title.isin(['Ms', 'Mlle'])] = 'Miss'
+        df['Title'][df.Title == 'Mme'] = 'Mrs'
         df['Title'][df.Title.isin(['Capt', 'Don', 'Major', 'Col'])] = 'Sir'
         df['Title'][df.Title.isin(['Dona', 'Lady', 'the Countess'])] = 'Lady'
         #...
         #分拆属性
         if keep_binary:
             df = pd.concat([df, pd.get_dummies(df['Title']).rename(columns = lambda x: 'Title_' + str(x))], axis = 1)
-        #名字长短压缩
+        #名字长短数值归一
         if keep_scaled:
             scaler = preprocessing.StandardScaler()
-            df['Names_scaled'] = scaler.fit_transform(df['Names'])
+            df['Names_scaled'] = scaler.fit_transform(names)
             #print df['Names_scaled']
         #人名映射成数值
         if keep_bins:
@@ -119,11 +136,12 @@ class TitanicPredict(object):
         print df.columns.values, '所有列'
         print df.columns.size
         X = df.values[:, :]
-        
 
         #PCA降维
         pca = PCA(n_components = .99)
+        #默认在原始数据上处理，也就是执行完后的X的值会改变
         X_transform = pca.fit_transform(X)
+#       X_transform = pca.inverse_transform(X_transform)
         pca_dataframe = pd.DataFrame(X_transform)
         print '降维后的维数', pca_dataframe.shape[1]
         #聚类
@@ -133,50 +151,42 @@ class TitanicPredict(object):
         
         cluster_ids = np.concatenate([train_cluster_ids, test_cluster_ids])
         cluster_id_series = pd.Series(cluster_ids, name = 'cluster_ids')
-        print df.shape
         #处理完后的特征数据
         df = pd.concat([survived_series, cluster_id_series, pca_dataframe, passenger_id], axis = 1)
-        print df.shape
-        print cluster_ids
         train = df[: train.shape[0]]
         test = df[train.shape[0]: ]
         test.reset_index(inplace = True)
         test.drop('index', axis = 1, inplace = True)
         test.drop('Survived', axis = 1, inplace = True)
-        print train.columns.values, '有没有啊'
         
         return train, test
 
     def processDrop(self, df):
         """drop"""
-        raw_drop_list = ['Name', 'Names', 'Title', 'Sex', 'SibSp', 'Parch', 'Pclass', 'Embarked', 'Cabin', 'CabinLetter', 'CabinNumber', 'Age', 'Fare', 'Ticket']
+        raw_drop_list = ['Name', 'Title', 'Sex', 'SibSp', 'Parch', 'Pclass', 'Embarked', 'Cabin', 'CabinLetter', 'CabinNumber', 'Age', 'Fare', 'Ticket']
         string_drop = ['Name', 'Title', 'Cabin', 'Ticket', 'Sex', 'Ticket']
         print 'processDrop:', df.columns.values
         df.drop(raw_drop_list, axis = 1, inplace = True)
         #self.df.drop(string_drop, axis = 1, inplace = True)
         return df
 
-    def dataPreProcess(self, train, test,  pca = False):
-        """数据预处理"""
-        #合并训练数据和测试数据
-        df = pd.concat([train, test])
-        df.reset_index(inplace = True)
-        df.drop('index', axis=1, inplace=True)
-        df.reindex_axis(self.train.columns, axis = 1)
-        #特征处理
-        df = self.processCabin(df)
-        df = self.processName(df)
-        df = self.processDrop(df)
+    def processPclass(self, df):
+        """pclass 船舱等级"""
+        df.Pclass[df.Pclass.isnull()] = df.Pclass.dropna().mode().values
+        pclass = pd.get_dummies(df['Pclass']).rename(columns = lambda x: 'Pclass_' + str(x))
+        df = pd.concat([df, pclass], axis = 1)
+        return df
 
+    def crossFeature(self, df):
+        """杂交生成更多特征"""
         columns_list = list(df.columns.values)
         columns_list.remove('Survived')
         new_col_list = list(['Survived'])
         new_col_list.extend(columns_list)
-        print new_col_list, 'new_col_list'
         df = df.reindex(columns = new_col_list)
         print 'start with', df.columns.size, 'feature', df.columns.values
+#       numerics = df.loc[:,['Names_scaled', 'CabinNumber_scaled', 'Age_scaled']]
         numerics = df.loc[:,['Names_scaled', 'CabinNumber_scaled']]
-        print 'feature numerics:', numerics.head(2)
         print 'col_num_bef', df.columns.size
         #增加特征
         new_fields_count = 0
@@ -196,10 +206,10 @@ class TitanicPredict(object):
                     name = str(numerics.columns.values[i]) + '-' +  str(numerics.columns.values[j])
                     df = pd.concat([df, pd.Series(numerics.iloc[:, i] - numerics.iloc[:, j], name = name)], axis = 1)
                     new_fields_count += 2
-        print 'col_num_aft', df.columns.size
-        print 'new feature_count', new_fields_count
-        print 'col', df.columns.values, 'col'
-        
+        return df
+
+    def increaseIndependence(self, df):
+        """增加各属性特征间的独立性，去重过于重复的属性"""
         #计算除了Survived,PassengerId外的其它列，两两之间的相关性，用斯皮尔曼相关系数
         df_corr = df.drop(['Survived', 'PassengerId'], axis = 1).corr(method = 'spearman')
         mask = np.ones(df_corr.columns.size) - np.eye(df_corr.columns.size)
@@ -217,6 +227,87 @@ class TitanicPredict(object):
             drops = np.union1d(drops, corr)
         #按列的drop
         df.drop(drops, axis = 1, inplace = True)
+        return df
+    
+    def processSex(self, df):
+        """处理性别"""
+        df['Sex_bin'] = np.where(df['Sex'] == 'male', 1, 0)
+        return df
+
+    def processAge(self, df, keep_bins = False, keep_scaled = False):
+        """age"""
+        #空值数据补全,随机森林预测缺失属性值
+        #loc 取区域交集
+        #age_df = df[['Age', 'Embarked', 'Pclass', 'Sex', 'SibSp', 'Parch', 'Title_id']]
+        age_df = df[['Age', 'Sex_bin', 'Title_id']]
+        age_null = age_df.loc[df['Age'].isnull()]
+        age_no_null = age_df.loc[df['Age'].notnull()]
+        print age_null.shape, 'age_null'
+        X = age_no_null.values[:, 1:]
+        Y = age_no_null.values[:, 0]
+        model = RandomForestRegressor(n_estimators = 200, n_jobs = -1)
+        model.fit(X, Y)
+        predict_ages = model.predict(age_null.values[:, 1:])
+        df.loc[(df.Age.isnull()), 'Age'] = predict_ages
+        df['Age_num'] = df['Age']
+        if keep_bins:
+            age_bin = pd.qcut(df['Age'], 7)
+            df['Age_bin'] = pd.factorize(age_bin)[0] + 1
+        if keep_scaled:
+            scaler = preprocessing.StandardScaler()
+            df['Age_scaled'] = scaler.fit_transform(df['Age'])
+        return df 
+
+    def processSibSp(self, df):
+        """在船上有兄弟姐妹，可能会一起逃生"""
+        df['SibSp_num'] = df['SibSp']
+        return df
+
+    def processParch(self, df):
+        """在船上有父母的可能需要按年龄分析一下，不过也该会一起逃生"""
+        df['Parch_num'] = df['Parch']
+        return df
+
+    def processFare(self, df):
+        """价格处理"""
+        #print df['Fare']
+        df.Fare[df.Fare.isnull()] = df.Fare.dropna().mode().values
+        df['Fare_num'] = df['Fare']
+        #区间化
+        fare_bin = pd.qcut(df['Fare'], 9)
+        fare_bin = pd.factorize(fare_bin)[0]
+        df['Fare_bin'] = fare_bin
+        return df
+
+    def processEmbarked(self, df):
+        """上船地点"""
+        #用众数实全na值
+        df.Embarked[df.Embarked.isnull()] = df.Embarked.dropna().mode().values
+        #数值化
+        Embarked_num = pd.factorize(df.Embarked)[0]
+        df['Embarked_num'] = Embarked_num
+        print Embarked_num
+        return df
+
+    def dataPreProcess(self, train, test,  pca = False):
+        """数据预处理"""
+        #合并训练数据和测试数据
+        df = pd.concat([train, test])
+        df.reset_index(inplace = True)
+        df.drop('index', axis=1, inplace=True)
+        df.reindex_axis(self.train.columns, axis = 1)
+        #特征处理
+        df = self.processCabin(df)
+        df = self.processName(df)
+        df = self.processSex(df)
+#       df = self.processAge(df)
+        df = self.processPclass(df)
+        df = self.processParch(df)
+        df = self.processSibSp(df)
+        df = self.processFare(df)
+        df = self.processEmbarked(df)
+        df = self.processDrop(df)
+        df = self.crossFeature(df)
 
         #获取处理完的训练数据和测试数据
         train = df[:train.shape[0]]
@@ -231,31 +322,6 @@ class TitanicPredict(object):
             test.drop('Survived', axis = 1, inplace = True)
             print test.columns.values, 'nopca'
 
-        #缺失属性不是非常重要，可以用众数，均值等,在哪上船对于预测生还用处不大
-        #df.Embarked[df.Embarked.isnull()] = df.Embarked.dropna().mode().values
-        #对于标称属性可以赋个缺失值，如船仓，但缺失也是信息，可能代表没有船仓
-        #df.Cabin[df.Cabin.isnull()] = 'U0'
-        #对于重要属性使用回归，随机森林预测缺失属性值。如年龄, 为什么可以用随机森林?
-        #train
-#       agedf = df[['Age', 'Survived', 'Fare', 'Parch', 'SibSp', 'Pclass']]
-#       #用loc获取交叉区域
-#       ageNull = agedf.loc[(df.Age.isnull())]
-#       ageNotNull = agedf.loc[(df.Age.notnull())]
-#       X_train, X_test, Y_train, Y_test = train_test_split(ageNotNull.values[:, 1:], ageNotNull.values[:, 0], test_size = 0.3, random_state = 42)
-#       X = ageNotNull.values[:, 1:]
-#       Y = ageNotNull.values[:, 0]
-#       model = RandomForestRegressor(n_estimators = 1000, n_jobs = -1)
-#       model.fit(X_train, Y_train)
-#       score = model.score(X_test, Y_test)
-#       print 'age预测准确率:', score
-#       predictAges = model.predict(ageNull.values[:, 1:])
-#       df.loc[(df.Age.isnull()), 'Age'] = predictAges
-#       df.info()
-#       df = pd.concat([self.df, self.test])
-#       df.reset_index(inplace = True)
-#       df.drop('index', axis = 1, inplace = True)
-#       print '+'*100
-#       print df
         return (train, test)
 
     def model(self, train, test):
@@ -275,15 +341,16 @@ class TitanicPredict(object):
         feature_list = train.columns.values[1:]
 
         #随机森林
-        forest = RandomForestClassifier(oob_score = True, n_estimators = 100)
+        forest = RandomForestClassifier(oob_score = True, n_estimators = 1000)
+#       forest.fit(X, Y, sample_weight = Y_weight)
         forest.fit(X, Y, sample_weight = Y_weight)
 #        print "准确率", forest.score(X_valid, Y_valid)
 
         feature_importance = forest.feature_importances_
         feature_importance = 100.0 * (feature_importance / feature_importance.max())
-        print feature_importance
         #特征重要度指标
         fi_threshold = 18
+        print feature_importance, fi_threshold, '重要度'
         important_idx = np.where(feature_importance > fi_threshold)[0]
         important_features = feature_list[important_idx]
         print 'important_features_num', important_features.shape
@@ -342,9 +409,9 @@ class TitanicPredict(object):
         #特征工程
         train = self.readTrain()
         test = self.readTest()
-        #self.dataAnalyse()
+#       self.dataAnalyse(train, test)
         train, test = self.dataPreProcess(train, test)
-        ##模型训练
+#       ##模型训练
         output = self.model(train, test)
         self.writeCSV(output)
 
